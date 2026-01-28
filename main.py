@@ -3,7 +3,7 @@ from datetime import datetime, time as dt_time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = os.getenv("TOKEN") or "YOUR_BOT_TOKEN"
+TOKEN = os.getenv("TOKEN") or "8521646944:AAHMSVQqXGPr7WcaG6zkiO443DYdUOvADJ4"
 ADMIN_IDS = [5955882128]  # Replace with your Telegram ID
 DATA_FILE = "data.json"
 
