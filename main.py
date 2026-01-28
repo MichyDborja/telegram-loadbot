@@ -1,11 +1,11 @@
-import json, os, re
+import json, os, re, asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-TOKEN = os.getenv("TOKEN") or "8521646944:AAHMSVQqXGPr7WcaG6zkiO443DYdUOvADJ4"
+TOKEN = os.getenv("TOKEN") or "YOUR_BOT_TOKEN_HERE"
 ADMIN_IDS = [5955882128]  # Replace with your Telegram ID
 DATA_FILE = "data.json"
 
@@ -35,9 +35,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📦 Record Load", callback_data="record_load")],
         [InlineKeyboardButton("💰 Wallet", callback_data="wallet")],
         [InlineKeyboardButton("📊 Summary", callback_data="summary")],
-        [InlineKeyboardButton("📝 Buyer History", callback_data="buyer_history")],
+        [InlineKeyboardButton("📝 History", callback_data="buyer_history")],
         [InlineKeyboardButton("💲 Pricelist", callback_data="pricelist")],
-        [InlineKeyboardButton("📄 Unpaid Receipts", callback_data="unpaid_receipts")]
+        [InlineKeyboardButton("⚠️ Unpaid List", callback_data="unpaid_list")]
     ]
     await update.message.reply_text("📌 LOAD MANAGEMENT BOT", reply_markup=InlineKeyboardMarkup(kb))
 
@@ -47,14 +47,16 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = load_data()
 
+    # ADD BUYER
     if query.data=="add_buyer":
         context.user_data["step"]="add_buyer"
-        kb = [[InlineKeyboardButton("Back to Menu", callback_data="back_main")]]
+        kb=[[InlineKeyboardButton("Back to Menu", callback_data="back_main")]]
         await query.message.reply_text("Send buyer name:", reply_markup=InlineKeyboardMarkup(kb))
 
     elif query.data=="back_main":
         await start(update, context)
 
+    # RECORD LOAD
     elif query.data=="record_load":
         if not data["buyers"]:
             await query.message.reply_text("No buyers yet.")
@@ -62,17 +64,19 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = [[InlineKeyboardButton(b, callback_data=f"buyer_{b}")] for b in data["buyers"]]
         await query.message.reply_text("Select buyer:", reply_markup=InlineKeyboardMarkup(kb))
 
+    # SELECT BUYER
     elif query.data.startswith("buyer_"):
         buyer = query.data.replace("buyer_","")
-        context.user_data["buyer"] = buyer
-        context.user_data["step"] = "record_details"
+        context.user_data["buyer"]=buyer
+        context.user_data["step"]="record_details"
         prices = data.get("prices", {})
         if prices:
             kb = [[InlineKeyboardButton(k.upper(), callback_data=f"price_{k}")] for k in prices.keys()]
             await query.message.reply_text("Select a price keyword or type details & amount manually:", reply_markup=InlineKeyboardMarkup(kb))
         else:
-            await query.message.reply_text("Send load details & amount:\nExample:\n09123456789 SA99 1,046.64")
+            await query.message.reply_text("Send load details & amount manually:\nExample:\n09123456789 SA99 1,046.64")
 
+    # PRICE SELECTION
     elif query.data.startswith("price_"):
         keyword = query.data.replace("price_","")
         price_info = data.get("prices",{}).get(keyword)
@@ -101,6 +105,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(f"📦 RECORDED\nID:{record['id']}\nBuyer:{record['buyer']}\nPrice:{record['price']:,.2f}\nCost:{record['cost']:,.2f}\nNetwork:{network.upper()}")
         context.user_data.clear()
 
+    # WALLET
     elif query.data=="wallet":
         wallets = data.get("wallets",{"smart":0,"globe":0,"tm":0})
         txt = "💰 WALLET BALANCES\n"
@@ -110,15 +115,17 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["step"]="wallet_add"
             await query.message.reply_text("Send amount and network to ADD:\nExample:\nsmart 1000")
 
+    # SUMMARY
     elif query.data=="summary":
         total_sales = sum(r["price"] for r in data["records"])
         total_paid = sum(r["paid_amount"] for r in data["records"])
         total_unpaid = total_sales - total_paid
         total_cost = sum(r.get("cost",0) for r in data["records"])
         total_profit = total_paid - total_cost
-        txt = f"📊 SALES SUMMARY\nTotal: {total_sales:,.2f}\nPaid: {total_paid:,.2f}\nUnpaid: {total_unpaid:,.2f}\nCost: {total_cost:,.2f}\nProfit: {total_profit:,.2f}"
+        txt = f"📊 SALES SUMMARY\nTotal Sales: {total_sales:,.2f}\nTotal Paid: {total_paid:,.2f}\nTotal Unpaid: {total_unpaid:,.2f}\nTotal Cost: {total_cost:,.2f}\nProfit: {total_profit:,.2f}"
         await query.message.reply_text(txt)
 
+    # HISTORY
     elif query.data=="buyer_history":
         if not data["buyers"]:
             await query.message.reply_text("No buyers yet.")
@@ -135,9 +142,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt = f"📝 History for {buyer}:\n"
         for r in records:
             status = f"{r['status']} ({r['paid_amount']:,.2f}/{r['price']:,.2f})"
-            txt+=f"ID:{r['id']} {r['details']} - {status}\n"
+            txt+=f"{r['time']} | {r['details']} | {r['price']:,.2f} | {status}\n"
         await query.message.reply_text(txt)
 
+    # PRICELIST
     elif query.data=="pricelist":
         txt="💲 PRICELIST\n"
         for k,v in data.get("prices",{}).items():
@@ -147,22 +155,27 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["step"]="add_price"
             await query.message.reply_text("Send new price: keyword price cost network\nExample: SA99 50 48.5 smart")
 
-    elif query.data=="unpaid_receipts":
+    # UNPAID LIST
+    elif query.data=="unpaid_list":
         records = [r for r in data["records"] if r["status"]=="UNPAID"]
         if not records:
             await query.message.reply_text("No unpaid records.")
             return
-        buyers = {}
+        msg = "⚠️ UNPAID LIST\n"
+        totals = {}
         for r in records:
-            buyers.setdefault(r["buyer"],[]).append(r)
-        for buyer, recs in buyers.items():
-            txt = f"🕒 Unpaid Receipt for {buyer}:\n"
-            total = 0
-            for r in recs:
-                txt+=f"{r['time']} | {r['details']} | Price:{r['price']:,.2f} | Status:{r['status']}\n"
-                total += r['price']
-            txt+=f"Total: {total:,.2f}\nSupplier: Rumil Aslur\nNOTE: No receipt, UNPAID❗ +5 per day delay"
-            await query.message.reply_text(txt)
+            # delay fee: only 12AM updates
+            record_time = datetime.strptime(r['time'], "%Y-%m-%d %H:%M")
+            delay = 0
+            if datetime.now().date() > record_time.date():
+                delay = 5
+            price_with_delay = r["price"] + delay
+            totals[r["buyer"]] = totals.get(r["buyer"],0) + price_with_delay
+            msg += f"{r['time']} | {r['buyer']} | {r['details']} | {price_with_delay:,.2f} | {r['status']}\n"
+        msg += "\n--- TOTAL PER BUYER ---\n"
+        for b, t in totals.items():
+            msg += f"{b}: {t:,.2f}\n"
+        await query.message.reply_text(msg)
 
 # ---------------- MESSAGES ----------------
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -174,9 +187,28 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if name not in data["buyers"]:
             data["buyers"].append(name)
             save_data(data)
-            kb = [[InlineKeyboardButton("Add Another Buyer", callback_data="add_buyer")],
-                  [InlineKeyboardButton("Back to Menu", callback_data="back_main")]]
+            kb=[[InlineKeyboardButton("Add Another", callback_data="add_buyer")],
+                [InlineKeyboardButton("Back to Menu", callback_data="back_main")]]
             await update.message.reply_text(f"✅ Buyer added: {name}", reply_markup=InlineKeyboardMarkup(kb))
+        context.user_data.clear()
+
+    elif step=="record_details":
+        text=update.message.text
+        amount=parse_amount(text)
+        record={
+            "id":len(data["records"])+1,
+            "buyer":context.user_data["buyer"],
+            "details":text,
+            "price":amount,
+            "cost":0,
+            "network":"",
+            "status":"UNPAID",
+            "paid_amount":0,
+            "time":datetime.now().strftime("%Y-%m-%d %H:%M")
+        }
+        data["records"].append(record)
+        save_data(data)
+        await update.message.reply_text(f"📦 RECORDED\nID:{record['id']}\nBuyer:{record['buyer']}\nPrice:{amount:,.2f}")
         context.user_data.clear()
 
     elif step=="wallet_add" and is_admin(update.message.from_user.id):
@@ -209,14 +241,14 @@ async def payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for r in data["records"]:
         if r["id"]==rid:
             context.user_data["step"]="pay_record"
-            context.user_data["record_id"] = rid
-            context.user_data["method"] = method.upper()
+            context.user_data["record_id"]=rid
+            context.user_data["method"]=method.upper()
             await query.message.reply_text(f"Enter amount paid for record ID:{rid} (Unpaid:{r['price']-r['paid_amount']:,.2f}):")
             return
 
 async def pay_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get("step")
-    if step != "pay_record": return
+    if step!="pay_record": return
     amt = parse_amount(update.message.text)
     rid = context.user_data["record_id"]
     method = context.user_data["method"]
@@ -233,45 +265,44 @@ async def pay_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
 # ---------------- UNPAID REMINDER ----------------
-async def send_unpaid_reminder(app):
+async def unpaid_reminder(app):
     data = load_data()
     records = [r for r in data["records"] if r["status"]=="UNPAID"]
-    if not records: return
-    now = datetime.now()
-    if now.hour == 0:  # 12AM delay fee
-        for r in records:
-            r["price"] += 5
-        save_data(data)
-    buyers = {}
+    if not records:
+        return
+    msg = "⚠️ UNPAID RECORDS REMINDER:\n"
+    totals = {}
     for r in records:
-        buyers.setdefault(r["buyer"],[]).append(r)
-    for buyer, recs in buyers.items():
-        txt = f"🕒 Reminder: Unpaid Receipt for {buyer}\n"
-        total = 0
-        for r in recs:
-            txt += f"{r['time']} | {r['details']} | Price:{r['price']:,.2f} | Status:{r['status']}\n"
-            total += r['price']
-        txt += f"Total: {total:,.2f}\nSupplier: Rumil Aslur\nNOTE: No receipt, UNPAID❗ +5 per day delay"
-        for admin_id in ADMIN_IDS:
-            await app.bot.send_message(chat_id=admin_id, text=txt)
-
-# ---------------- SCHEDULER ----------------
-def setup_scheduler(app):
-    scheduler = AsyncIOScheduler()
-    for hr in [0,8,17,20]:
-        scheduler.add_job(send_unpaid_reminder, CronTrigger(hour=hr, minute=0), args=[app])
-    scheduler.start()
+        record_time = datetime.strptime(r['time'], "%Y-%m-%d %H:%M")
+        delay = 0
+        if datetime.now().date() > record_time.date():
+            delay = 5
+        price_with_delay = r["price"] + delay
+        totals[r["buyer"]] = totals.get(r["buyer"],0) + price_with_delay
+        msg += f"{r['time']} | {r['buyer']} | {r['details']} | {price_with_delay:,.2f} | {r['status']}\n"
+    msg += "\n--- TOTAL PER BUYER ---\n"
+    for b,t in totals.items():
+        msg += f"{b}: {t:,.2f}\n"
+    for admin_id in ADMIN_IDS:
+        await app.bot.send_message(admin_id,msg)
 
 # ---------------- MAIN ----------------
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(payment, pattern="^pay_"))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
-    app.add_handler(CallbackQueryHandler(payment, pattern="^pay_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, pay_amount))
 
-    setup_scheduler(app)
+    # Scheduler
+    scheduler = AsyncIOScheduler()
+    # Delay fee updates at 12AM
+    scheduler.add_job(lambda: asyncio.create_task(unpaid_reminder(app)), CronTrigger(hour=0, minute=0))
+    # Unpaid reminders at 12AM, 8AM, 5PM, 8PM
+    for hour in [0,8,17,20]:
+        scheduler.add_job(lambda: asyncio.create_task(unpaid_reminder(app)), CronTrigger(hour=hour, minute=0))
+    scheduler.start()
 
     print("Bot running...")
     app.run_polling(close_loop=False)
