@@ -1,9 +1,10 @@
 import json, os, re, asyncio
-from datetime import datetime, time as dt_time
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-TOKEN = os.getenv("TOKEN") or "8521646944:AAHMSVQqXGPr7WcaG6zkiO443DYdUOvADJ4"
+TOKEN = os.getenv("TOKEN") or "YOUR_BOT_TOKEN"
 ADMIN_IDS = [5955882128]  # Replace with your Telegram ID
 DATA_FILE = "data.json"
 
@@ -51,9 +52,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---------- ADD BUYER ----------
     if query.data == "add_buyer":
         context.user_data["step"] = "add_buyer"
-        kb = [
-            [InlineKeyboardButton("Cancel / Back", callback_data="main_menu")]
-        ]
+        kb = [[InlineKeyboardButton("Cancel / Back", callback_data="main_menu")]]
         await query.message.reply_text("Send buyer name:", reply_markup=InlineKeyboardMarkup(kb))
 
     elif query.data == "main_menu":
@@ -279,31 +278,27 @@ async def pay_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             return
 
+# ---------------- REMINDER JOB ----------------
+async def reminder_job(app):
+    data = load_data()
+    records = [r for r in data["records"] if r["status"]=="UNPAID"]
+    if not records: return
+    totals = {}
+    msg = "⚠️ UNPAID RECORDS REMINDER:\n"
+    for r in records:
+        record_time = datetime.strptime(r["time"], "%Y-%m-%d %H:%M")
+        if datetime.now().date() > record_time.date() and datetime.now().hour==0:
+            r["price"] += 5  # delay fee at 12AM only
+        totals[r["buyer"]] = totals.get(r["buyer"],0)+r["price"]
+        msg += f"{r['time']} | {r['buyer']} | {r['details']} | {r['price']:,.2f} | {r['status']}\n"
+    msg += "\n--- TOTAL PER BUYER ---\n"
+    for b,t in totals.items():
+        msg += f"{b}: {t:,.2f}\n"
+    save_data(data)
+    for admin_id in ADMIN_IDS:
+        await app.bot.send_message(admin_id,msg)
+
 # ---------------- MAIN ----------------
-async def setup_jobs(app):
-    # JobQueue reminders at 12AM, 8AM, 5PM, 8PM
-    async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
-        data = load_data()
-        records = [r for r in data["records"] if r["status"]=="UNPAID"]
-        if not records: return
-        totals = {}
-        msg = "⚠️ UNPAID RECORDS REMINDER:\n"
-        for r in records:
-            record_time = datetime.strptime(r["time"], "%Y-%m-%d %H:%M")
-            if datetime.now().date() > record_time.date() and datetime.now().hour==0:
-                r["price"] += 5  # delay fee at 12AM only
-            totals[r["buyer"]] = totals.get(r["buyer"],0)+r["price"]
-            msg += f"{r['time']} | {r['buyer']} | {r['details']} | {r['price']:,.2f} | {r['status']}\n"
-        msg += "\n--- TOTAL PER BUYER ---\n"
-        for b,t in totals.items():
-            msg += f"{b}: {t:,.2f}\n"
-        save_data(data)
-        for admin_id in ADMIN_IDS:
-            await context.bot.send_message(admin_id,msg)
-
-    for hr in [0,8,17,20]:
-        app.job_queue.run_daily(reminder_job, dt_time(hour=hr, minute=0))
-
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -314,7 +309,12 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, pay_amount))
 
-    await setup_jobs(app)
+    # ---------------- APScheduler ----------------
+    scheduler = AsyncIOScheduler()
+    for hr in [0,8,17,20]:
+        scheduler.add_job(reminder_job, "cron", hour=hr, minute=0, args=[app])
+    scheduler.start()
+
     print("Bot running...")
     await app.run_polling()
 
